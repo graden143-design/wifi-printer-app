@@ -1,6 +1,6 @@
 """
 ====================================================================
- Universal Client-Server LAN & Wi-Fi Print Station
+ Universal Client-Server LAN & Wi-Fi Print Station (Win 10/11 Ready)
  Copyright (c) 2026 BENOZIR. All Rights Reserved.
 ====================================================================
 """
@@ -62,11 +62,28 @@ def get_installed_printers():
         default_printer = "Default Printer"
     return printers, default_printer
 
-def print_file_host(printer_name, filepath):
-    """Executes printing on host using native Windows Shell API."""
+def print_file_host_win10_11(printer_name, filepath):
+    """Windows 10/11 Native Raw Spooler Submission."""
     if not WIN32_AVAILABLE:
-        raise Exception("Windows Print API not available.")
-    
+        raise Exception("Windows Print Spooler API unavailable.")
+
+    # Try native WinSpool Raw Direct Stream first (Fastest for Windows 10/11)
+    try:
+        hPrinter = win32print.OpenPrinter(printer_name)
+        try:
+            hJob = win32print.StartDocPrinter(hPrinter, 1, ("LAN_Print_Job", None, "RAW"))
+            win32print.StartPagePrinter(hPrinter)
+            with open(filepath, "rb") as f:
+                win32print.WritePrinter(hPrinter, f.read())
+            win32print.EndPagePrinter(hPrinter)
+            win32print.EndDocPrinter(hPrinter)
+            return
+        finally:
+            win32print.ClosePrinter(hPrinter)
+    except Exception:
+        pass
+
+    # Fallback to ShellExecute verb method with Default Printer swap
     old_printer = win32print.GetDefaultPrinter()
     try:
         win32print.SetDefaultPrinter(printer_name)
@@ -86,7 +103,6 @@ class PrintServer:
         threading.Thread(target=self._tcp_listener, daemon=True).start()
 
     def _udp_multi_broadcaster(self):
-        """Broadcasts host presence across ALL LAN & Wi-Fi network interfaces."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         
@@ -148,7 +164,7 @@ class PrintServer:
                         f.write(chunk)
                         received += len(chunk)
 
-                print_file_host(printer_name, temp_path)
+                print_file_host_win10_11(printer_name, temp_path)
                 conn.sendall(b"SUCCESS")
                 self.status_callback(f"Printed '{file_name}' from {addr[0]} on '{printer_name}'")
         except Exception as e:
@@ -160,8 +176,8 @@ class PrintServer:
 class AppGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Universal LAN & Wi-Fi Print Station - BENOZIR 2026")
-        self.root.geometry("580x550")
+        self.root.title("Universal LAN & Wi-Fi Print Station (Windows 10/11) - BENOZIR 2026")
+        self.root.geometry("580x560")
         self.root.configure(bg="#f8fafc")
 
         self.mode = None
@@ -175,13 +191,13 @@ class AppGUI:
             widget.destroy()
 
         tk.Label(self.root, text="🖨️ LAN / Wi-Fi Print Station", font=("Segoe UI", 16, "bold"), bg="#f8fafc", fg="#0f172a").pack(pady=(25, 2))
-        tk.Label(self.root, text="© 2026 BENOZIR. All Rights Reserved.", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
+        tk.Label(self.root, text="Compatible with Windows 10 & 11 | © 2026 BENOZIR", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
 
         frame = tk.LabelFrame(self.root, text=" Choose Operating Mode ", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7", padx=20, pady=20)
         frame.pack(fill="both", expand=True, padx=30, pady=10)
 
         tk.Button(frame, text="🖥️ Host Mode\n(Run on PC connected to physical printers)", command=self.start_host_mode, font=("Segoe UI", 11, "bold"), bg="#0284c7", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
-        tk.Button(frame, text="💻 Client Mode\n(Run on LAN / Wi-Fi PCs to send print jobs)", command=self.start_client_mode, font=("Segoe UI", 11, "bold"), bg="#475569", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
+        tk.Button(frame, text="💻 Client Mode\n(Run on network PCs to send print jobs)", command=self.start_client_mode, font=("Segoe UI", 11, "bold"), bg="#475569", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
 
     # --- HOST GUI ---
     def start_host_mode(self):
@@ -216,7 +232,7 @@ class AppGUI:
 
         self.server_instance = PrintServer(self.log_message)
         self.server_instance.start()
-        self.log_message("Host server started. Active on Ethernet & Wi-Fi...")
+        self.log_message("Host server running on Windows 10/11 Print Engine...")
 
     def log_message(self, msg):
         if hasattr(self, 'log_box'):
@@ -283,7 +299,6 @@ class AppGUI:
         threading.Thread(target=self._subnet_sweep, daemon=True).start()
 
     def _subnet_sweep(self):
-        """Scans local subnet (/24) for Host Print Server on port 9100."""
         local_ips = get_all_local_ips()
         if not local_ips:
             return
