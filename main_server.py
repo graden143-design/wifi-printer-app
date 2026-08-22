@@ -168,7 +168,7 @@ class AppGUI:
         tk.Label(self.root, text="© 2026 BENOZIR. All Rights Reserved.", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
 
         frame = tk.LabelFrame(self.root, text=" Choose PC Operating Mode ", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7", padx=20, pady=20)
-        frame.pack(fill="both", expand=True, px=30, py=10)
+        frame.pack(fill="both", expand=True, padx=30, pady=10)
 
         tk.Button(frame, text="🖥️ Host Mode\n(Run on PC connected to physical printers)", command=self.start_host_mode, font=("Segoe UI", 11, "bold"), bg="#0284c7", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
         tk.Button(frame, text="💻 Client Mode\n(Run on network PCs to send print jobs)", command=self.start_client_mode, font=("Segoe UI", 11, "bold"), bg="#475569", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
@@ -185,16 +185,16 @@ class AppGUI:
         tk.Label(self.root, text="🖥️ HOST PRINT SERVER", font=("Segoe UI", 15, "bold"), bg="#f8fafc", fg="#166534").pack(pady=(15, 2))
         tk.Label(self.root, text=f"Broadcasting Printers on LAN IP: {ip}", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7").pack()
 
-        p_frame = tk.LabelFrame(self.root, text=" Shared Printers Active ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", px=10, pady=10)
-        p_frame.pack(fill="x", px=20, py=10)
+        p_frame = tk.LabelFrame(self.root, text=" Shared Printers Active ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", padx=10, pady=10)
+        p_frame.pack(fill="x", padx=20, pady=10)
 
         listbox = tk.Listbox(p_frame, height=4, font=("Segoe UI", 9))
         listbox.pack(fill="x")
         for p in printers:
             listbox.insert(tk.END, f"  • {p}")
 
-        log_frame = tk.LabelFrame(self.root, text=" Server Print Activity Log ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", px=10, pady=10)
-        log_frame.pack(fill="both", expand=True, px=20, py=(0, 15))
+        log_frame = tk.LabelFrame(self.root, text=" Server Print Activity Log ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", padx=10, pady=10)
+        log_frame.pack(fill="both", expand=True, padx=20, pady=(0, 15))
 
         self.log_box = tk.Text(log_frame, font=("Consolas", 9), state="disabled", bg="#0f172a", fg="#38bdf8")
         self.log_box.pack(fill="both", expand=True)
@@ -220,7 +220,7 @@ class AppGUI:
         self.status_lbl = tk.Label(self.root, text="Searching for Host Printer Server on LAN...", font=("Segoe UI", 9, "italic"), bg="#f8fafc", fg="#d97706")
         self.status_lbl.pack()
 
-        c_frame = tk.Frame(self.root, bg="#f8fafc", px=20, py=10)
+        c_frame = tk.Frame(self.root, bg="#f8fafc", padx=20, pady=10)
         c_frame.pack(fill="both", expand=True)
 
         tk.Label(c_frame, text="Select Target Host Printer:", font=("Segoe UI", 10, "bold"), bg="#f8fafc").pack(anchor="w", pady=(10, 2))
@@ -233,7 +233,7 @@ class AppGUI:
         file_box.pack(fill="x", pady=(0, 15))
         
         self.file_entry = tk.Entry(file_box, font=("Segoe UI", 10))
-        self.file_entry.pack(side="left", fill="x", expand=True, px=(0, 5))
+        self.file_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
         tk.Button(file_box, text="Browse...", command=self.browse_file, font=("Segoe UI", 9, "bold")).pack(side="right")
 
         tk.Button(c_frame, text="🖨️ Send Print Job to Host", command=self.send_print_job, font=("Segoe UI", 12, "bold"), bg="#166534", fg="white", relief="flat", pady=10).pack(fill="x", pady=15)
