@@ -1,6 +1,6 @@
 """
 ====================================================================
- Universal Client-Server LAN & Wi-Fi Print Station (Robust Stream)
+ Universal Client-Server LAN & Wi-Fi Print Station (Win 10/11 Ready)
  Copyright (c) 2026 BENOZIR. All Rights Reserved.
 ====================================================================
 """
@@ -11,6 +11,8 @@ import socket
 import threading
 import json
 import time
+import shutil
+import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -24,8 +26,9 @@ except ImportError:
 PORT = 9100
 BROADCAST_PORT = 9101
 
-# --- SYSTEM UTILITIES ---
+# --- MULTI-INTERFACE & NETWORK UTILITIES ---
 def get_all_local_ips():
+    """Gets all IPv4 addresses across Ethernet and Wi-Fi adapters."""
     ip_list = []
     try:
         hostname = socket.gethostname()
@@ -45,6 +48,7 @@ def get_all_local_ips():
     return list(set(ip_list))
 
 def get_installed_printers():
+    """Enumerates all active local and network printers available in Windows."""
     printers = []
     default_printer = ""
     if WIN32_AVAILABLE:
@@ -60,36 +64,64 @@ def get_installed_printers():
         default_printer = "Default Printer"
     return printers, default_printer
 
-def print_file_host_win10_11(printer_name, filepath):
-    if not WIN32_AVAILABLE:
-        raise Exception("Windows Print Spooler API unavailable.")
+def print_file_robust(printer_name, filepath):
+    """Fail-safe, multi-stage printing engine for Windows 10 & 11."""
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Temp file missing: {filepath}")
 
-    # Try raw spool submission first
-    try:
-        hPrinter = win32print.OpenPrinter(printer_name)
+    ext = os.path.splitext(filepath)[1].lower()
+
+    # METHOD 1: Silent Document/Image Printing via PowerShell PrintTo
+    if ext in ['.pdf', '.doc', '.docx', '.txt', '.png', '.jpg', '.jpeg']:
         try:
-            hJob = win32print.StartDocPrinter(hPrinter, 1, ("LAN_Print_Job", None, "RAW"))
-            win32print.StartPagePrinter(hPrinter)
-            with open(filepath, "rb") as f:
-                win32print.WritePrinter(hPrinter, f.read())
-            win32print.EndPagePrinter(hPrinter)
-            win32print.EndDocPrinter(hPrinter)
-            return
-        finally:
-            win32print.ClosePrinter(hPrinter)
-    except Exception:
-        pass
+            ps_cmd = (
+                f'$p = "{printer_name}"; '
+                f'$f = "{filepath}"; '
+                f'Start-Process -FilePath $f -Verb PrintTo -ArgumentList "`"$p`"" -WindowStyle Hidden -ErrorAction Stop'
+            )
+            proc = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, timeout=15)
+            if proc.returncode == 0:
+                time.sleep(3)
+                return
+        except Exception:
+            pass
 
-    # Fallback to ShellExecute with default printer swap
-    old_printer = win32print.GetDefaultPrinter()
-    try:
-        win32print.SetDefaultPrinter(printer_name)
-        win32api.ShellExecute(0, "print", filepath, None, ".", 0)
-    finally:
-        win32print.SetDefaultPrinter(old_printer)
+    # METHOD 2: Native Win32 ShellExecute with Default Printer Override
+    if WIN32_AVAILABLE:
+        try:
+            old_default = win32print.GetDefaultPrinter()
+            win32print.SetDefaultPrinter(printer_name)
+            try:
+                res = win32api.ShellExecute(0, "print", filepath, None, ".", 0)
+                if int(res) > 32:
+                    time.sleep(3)
+                    return
+            finally:
+                win32print.SetDefaultPrinter(old_default)
+        except Exception:
+            pass
+
+    # METHOD 3: Direct Raw Spooler Submission (For Thermal / POS / Raw PRN Streams)
+    if WIN32_AVAILABLE:
+        try:
+            hPrinter = win32print.OpenPrinter(printer_name)
+            try:
+                hJob = win32print.StartDocPrinter(hPrinter, 1, ("LAN_Print_Job", None, "RAW"))
+                win32print.StartPagePrinter(hPrinter)
+                with open(filepath, "rb") as f:
+                    win32print.WritePrinter(hPrinter, f.read())
+                win32print.EndPagePrinter(hPrinter)
+                win32print.EndDocPrinter(hPrinter)
+                return
+            finally:
+                win32print.ClosePrinter(hPrinter)
+        except Exception:
+            pass
+
+    raise Exception(f"Failed to submit {ext} file to '{printer_name}'. Check default application associations on Host.")
 
 def recv_exact(sock, length):
-    """Guarantees exact byte size reading across network streams."""
+    """Guarantees exact byte count reading across TCP streams to prevent JSON framing errors."""
     data = bytearray()
     while len(data) < length:
         packet = sock.recv(length - len(data))
@@ -138,6 +170,7 @@ class PrintServer:
                 pass
 
     def _handle_client(self, conn, addr):
+        temp_path = None
         try:
             # Read fixed 4-byte header length indicator
             raw_len = recv_exact(conn, 4)
@@ -145,7 +178,7 @@ class PrintServer:
                 return
             header_len = int.from_bytes(raw_len, byteorder='big')
 
-            # Read full JSON payload
+            # Read full JSON header payload
             header_bytes = recv_exact(conn, header_len)
             if not header_bytes:
                 return
@@ -168,7 +201,10 @@ class PrintServer:
                 
                 conn.sendall(b"READY")
                 
-                temp_path = os.path.join(os.path.expanduser("~"), f"temp_job_{file_name}")
+                # Save incoming job securely in Windows user temp path
+                temp_dir = os.environ.get("TEMP", os.path.expanduser("~"))
+                temp_path = os.path.join(temp_dir, f"lan_job_{int(time.time())}_{file_name}")
+                
                 received = 0
                 with open(temp_path, "wb") as f:
                     while received < file_size:
@@ -178,20 +214,30 @@ class PrintServer:
                         f.write(chunk)
                         received += len(chunk)
 
-                print_file_host_win10_11(printer_name, temp_path)
+                # Process job through the robust Windows print engine
+                print_file_robust(printer_name, temp_path)
                 conn.sendall(b"SUCCESS")
-                self.status_callback(f"Printed '{file_name}' from {addr[0]} on '{printer_name}'")
-                
-                time.sleep(2)
-                if os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except Exception:
-                        pass
+                self.status_callback(f"Successfully printed '{file_name}' on '{printer_name}'")
+
         except Exception as e:
-            self.status_callback(f"Error handling job from {addr[0]}: {str(e)}")
+            error_msg = f"Error processing job from {addr[0]}: {str(e)}"
+            self.status_callback(error_msg)
+            try:
+                conn.sendall(b"ERROR")
+            except Exception:
+                pass
         finally:
             conn.close()
+            # Asynchronously remove temporary file once spooler completes
+            if temp_path and os.path.exists(temp_path):
+                def delayed_remove(path):
+                    time.sleep(6)
+                    try:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    except Exception:
+                        pass
+                threading.Thread(target=delayed_remove, args=(temp_path,), daemon=True).start()
 
 # --- GRAPHICAL INTERFACE ---
 class AppGUI:
@@ -420,9 +466,22 @@ class AppGUI:
             messagebox.showwarning("No Printer", "Please select a printer.")
             return
 
+        temp_client_copy = None
         try:
-            file_size = os.path.getsize(filepath)
             file_name = os.path.basename(filepath)
+
+            # Check for file locks by other active programs; copy to temp if locked
+            try:
+                with open(filepath, "rb") as test_f:
+                    test_f.read(10)
+                source_path = filepath
+            except PermissionError:
+                temp_dir = os.environ.get("TEMP", os.path.expanduser("~"))
+                temp_client_copy = os.path.join(temp_dir, f"client_copy_{int(time.time())}_{file_name}")
+                shutil.copy2(filepath, temp_client_copy)
+                source_path = temp_client_copy
+
+            file_size = os.path.getsize(source_path)
 
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(15.0)
@@ -440,7 +499,7 @@ class AppGUI:
 
             ack = s.recv(1024)
             if ack == b"READY":
-                with open(filepath, "rb") as f:
+                with open(source_path, "rb") as f:
                     while True:
                         chunk = f.read(8192)
                         if not chunk:
@@ -450,9 +509,18 @@ class AppGUI:
                 res = s.recv(1024)
                 if res == b"SUCCESS":
                     messagebox.showinfo("Success", f"Print job sent successfully to Host!")
+                else:
+                    messagebox.showerror("Print Failed", "Host PC encountered an issue printing the file.")
             s.close()
+
         except Exception as e:
-            messagebox.showerror("Print Failed", f"Network error sending print job: {str(e)}")
+            messagebox.showerror("Print Failed", f"Network or File Error: {str(e)}")
+        finally:
+            if temp_client_copy and os.path.exists(temp_client_copy):
+                try:
+                    os.remove(temp_client_copy)
+                except Exception:
+                    pass
 
 if __name__ == "__main__":
     root = tk.Tk()
