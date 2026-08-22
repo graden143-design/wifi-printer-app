@@ -1,6 +1,6 @@
 """
 ====================================================================
- Universal Client-Server LAN & Wi-Fi Print Station (Win 10/11 Ready)
+ Universal Client-Server LAN & Wi-Fi Print Station (Robust Stream)
  Copyright (c) 2026 BENOZIR. All Rights Reserved.
 ====================================================================
 """
@@ -11,7 +11,6 @@ import socket
 import threading
 import json
 import time
-import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -25,9 +24,8 @@ except ImportError:
 PORT = 9100
 BROADCAST_PORT = 9101
 
-# --- MULTI-INTERFACE & NETWORK UTILITIES ---
+# --- SYSTEM UTILITIES ---
 def get_all_local_ips():
-    """Gets all IPv4 addresses across Ethernet and Wi-Fi adapters."""
     ip_list = []
     try:
         hostname = socket.gethostname()
@@ -63,11 +61,10 @@ def get_installed_printers():
     return printers, default_printer
 
 def print_file_host_win10_11(printer_name, filepath):
-    """Windows 10/11 Native Raw Spooler Submission."""
     if not WIN32_AVAILABLE:
         raise Exception("Windows Print Spooler API unavailable.")
 
-    # Try native WinSpool Raw Direct Stream first (Fastest for Windows 10/11)
+    # Try raw spool submission first
     try:
         hPrinter = win32print.OpenPrinter(printer_name)
         try:
@@ -83,13 +80,23 @@ def print_file_host_win10_11(printer_name, filepath):
     except Exception:
         pass
 
-    # Fallback to ShellExecute verb method with Default Printer swap
+    # Fallback to ShellExecute with default printer swap
     old_printer = win32print.GetDefaultPrinter()
     try:
         win32print.SetDefaultPrinter(printer_name)
         win32api.ShellExecute(0, "print", filepath, None, ".", 0)
     finally:
         win32print.SetDefaultPrinter(old_printer)
+
+def recv_exact(sock, length):
+    """Guarantees exact byte size reading across network streams."""
+    data = bytearray()
+    while len(data) < length:
+        packet = sock.recv(length - len(data))
+        if not packet:
+            return None
+        data.extend(packet)
+    return bytes(data)
 
 # --- HOST SERVER LOGIC ---
 class PrintServer:
@@ -132,10 +139,17 @@ class PrintServer:
 
     def _handle_client(self, conn, addr):
         try:
-            header_bytes = conn.recv(2048)
+            # Read fixed 4-byte header length indicator
+            raw_len = recv_exact(conn, 4)
+            if not raw_len:
+                return
+            header_len = int.from_bytes(raw_len, byteorder='big')
+
+            # Read full JSON payload
+            header_bytes = recv_exact(conn, header_len)
             if not header_bytes:
                 return
-            
+
             header = json.loads(header_bytes.decode('utf-8'))
             action = header.get("action")
 
@@ -158,7 +172,7 @@ class PrintServer:
                 received = 0
                 with open(temp_path, "wb") as f:
                     while received < file_size:
-                        chunk = conn.recv(4096)
+                        chunk = conn.recv(min(8192, file_size - received))
                         if not chunk:
                             break
                         f.write(chunk)
@@ -167,6 +181,13 @@ class PrintServer:
                 print_file_host_win10_11(printer_name, temp_path)
                 conn.sendall(b"SUCCESS")
                 self.status_callback(f"Printed '{file_name}' from {addr[0]} on '{printer_name}'")
+                
+                time.sleep(2)
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
         except Exception as e:
             self.status_callback(f"Error handling job from {addr[0]}: {str(e)}")
         finally:
@@ -176,7 +197,7 @@ class PrintServer:
 class AppGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Universal LAN & Wi-Fi Print Station (Windows 10/11) - BENOZIR 2026")
+        self.root.title("Universal LAN & Wi-Fi Print Station - BENOZIR 2026")
         self.root.geometry("580x560")
         self.root.configure(bg="#f8fafc")
 
@@ -191,7 +212,7 @@ class AppGUI:
             widget.destroy()
 
         tk.Label(self.root, text="🖨️ LAN / Wi-Fi Print Station", font=("Segoe UI", 16, "bold"), bg="#f8fafc", fg="#0f172a").pack(pady=(25, 2))
-        tk.Label(self.root, text="Compatible with Windows 10 & 11 | © 2026 BENOZIR", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
+        tk.Label(self.root, text="Windows 10 & 11 Optimized | © 2026 BENOZIR", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
 
         frame = tk.LabelFrame(self.root, text=" Choose Operating Mode ", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7", padx=20, pady=20)
         frame.pack(fill="both", expand=True, padx=30, pady=10)
@@ -232,7 +253,7 @@ class AppGUI:
 
         self.server_instance = PrintServer(self.log_message)
         self.server_instance.start()
-        self.log_message("Host server running on Windows 10/11 Print Engine...")
+        self.log_message("Host server running. Ready for incoming print jobs...")
 
     def log_message(self, msg):
         if hasattr(self, 'log_box'):
@@ -315,7 +336,9 @@ class AppGUI:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(0.3)
                 if s.connect_ex((target_ip, PORT)) == 0:
-                    s.sendall(json.dumps({"action": "ping"}).encode('utf-8'))
+                    payload = json.dumps({"action": "ping"}).encode('utf-8')
+                    header = len(payload).to_bytes(4, byteorder='big') + payload
+                    s.sendall(header)
                     res = s.recv(512)
                     if b"BENOZIR_PRINT_SERVER" in res:
                         found_ip = target_ip
@@ -360,9 +383,13 @@ class AppGUI:
     def fetch_host_printers(self):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(4.0)
+            s.settimeout(5.0)
             s.connect((self.host_ip, PORT))
-            s.sendall(json.dumps({"action": "get_printers"}).encode('utf-8'))
+
+            payload = json.dumps({"action": "get_printers"}).encode('utf-8')
+            header = len(payload).to_bytes(4, byteorder='big') + payload
+            s.sendall(header)
+
             data = s.recv(4096)
             res = json.loads(data.decode('utf-8'))
             printers = res.get("printers", [])
@@ -398,21 +425,27 @@ class AppGUI:
             file_name = os.path.basename(filepath)
 
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(10.0)
+            s.settimeout(15.0)
             s.connect((self.host_ip, PORT))
 
-            header = {
+            header_dict = {
                 "action": "print",
                 "printer_name": printer_name,
                 "file_name": file_name,
                 "file_size": file_size
             }
-            s.sendall(json.dumps(header).encode('utf-8'))
+            payload = json.dumps(header_dict).encode('utf-8')
+            header = len(payload).to_bytes(4, byteorder='big') + payload
+            s.sendall(header)
 
             ack = s.recv(1024)
             if ack == b"READY":
                 with open(filepath, "rb") as f:
-                    s.sendall(f.read())
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        s.sendall(chunk)
 
                 res = s.recv(1024)
                 if res == b"SUCCESS":
