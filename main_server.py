@@ -1,6 +1,6 @@
 """
 ====================================================================
- WiFi & LAN Print Server Application Pro + Network Printer Manager
+ Offline Desktop & Network Print Server Suite
  Copyright (c) 2026 BENOZIR. All Rights Reserved.
 ====================================================================
 """
@@ -10,8 +10,9 @@ import sys
 import threading
 import socket
 import io
-import subprocess
-from PIL import Image, ImageDraw
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageDraw, ImageTk
 import pystray
 from flask import Flask, render_template_string, request, flash, redirect, send_file
 
@@ -33,30 +34,24 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Universal Print Server & Printer Manager - BENOZIR</title>
+    <title>LAN Print Server - BENOZIR</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: system-ui, -apple-system, sans-serif; background: #f0f4f8; color: #333; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-        .card { background: #fff; width: 100%; max-width: 560px; padding: 28px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
-        h2 { font-size: 22px; margin-bottom: 4px; text-align: center; color: #1e293b; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: #e2e8f0; color: #1e293b; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .card { background: #fff; width: 100%; max-width: 520px; padding: 28px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        h2 { font-size: 22px; text-align: center; color: #0f172a; margin-bottom: 4px; }
         p.subtitle { font-size: 13px; color: #64748b; text-align: center; margin-bottom: 20px; }
         .form-group { margin-bottom: 16px; text-align: left; }
-        label { font-size: 13px; font-weight: 600; color: #475569; display: block; margin-bottom: 6px; }
-        select, input[type="text"], input[type="number"] { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; background: #f8fafc; }
-        select:focus, input:focus { border-color: #0284c7; background: #fff; }
+        label { font-size: 13px; font-weight: 600; color: #334155; display: block; margin-bottom: 6px; }
+        select, input[type="text"], input[type="number"] { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #f8fafc; }
         .row { display: flex; gap: 12px; }
         .col { flex: 1; }
         .alert { padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
-        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        .alert-success { background: #dcfce7; color: #166534; }
+        .alert-error { background: #fee2e2; color: #991b1b; }
         .file-drop { border: 2px dashed #0284c7; border-radius: 12px; padding: 20px; background: #f0f9ff; cursor: pointer; text-align: center; margin-bottom: 16px; }
-        button { background: #0284c7; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        button { background: #0284c7; color: white; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 15px; font-weight: 600; cursor: pointer; }
         button:hover { background: #0369a1; }
-        .btn-secondary { background: #64748b; margin-top: 8px; }
-        .btn-secondary:hover { background: #475569; }
-        #preview-container { display: none; margin-bottom: 16px; text-align: center; background: #f1f5f9; padding: 10px; border-radius: 8px; border: 1px solid #e2e8f0; }
-        #preview-img { max-width: 100%; max-height: 200px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-        .add-printer-box { display: none; background: #f8fafc; border: 1px solid #e2e8f0; padding: 16px; border-radius: 12px; margin-bottom: 16px; }
         .qr-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e2e8f0; text-align: center; }
         .qr-section img { border-radius: 8px; border: 1px solid #cbd5e1; padding: 4px; width: 100px; height: 100px; }
         .footer-copy { margin-top: 16px; font-size: 11px; color: #94a3b8; text-align: center; font-weight: 500; }
@@ -64,8 +59,8 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="card">
-        <h2>🖨️ Universal Print Server</h2>
-        <p class="subtitle">WiFi/LAN Printer & Windows Printer Manager</p>
+        <h2>🖨️ LAN / WiFi Print Server</h2>
+        <p class="subtitle">Shared Printer Network Access</p>
 
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
@@ -75,84 +70,41 @@ HTML_TEMPLATE = """
           {% endif %}
         {% endwith %}
 
-        <form method="post" action="/add_printer" class="add-printer-box" id="add-printer-form">
-            <div class="form-group">
-                <label for="printer_path">Add Printer (UNC Path or Local Name)</label>
-                <input type="text" name="printer_path" placeholder="e.g. \\192.168.1.10\SharedPrinter" required>
-            </div>
-            <button type="submit">Connect New Printer</button>
-        </form>
-
         <form method="post" enctype="multipart/form-data">
             <div class="form-group">
-                <label for="printer_name">Target Active Printer</label>
+                <label for="printer_name">Target Printer</label>
                 <select name="printer_name" id="printer_name">
                     {% for p in printers %}
                         <option value="{{ p }}" {% if p == default_printer %}selected{% endif %}>{{ p }}</option>
                     {% endfor %}
                 </select>
-                <button type="button" class="btn-secondary" onclick="toggleAddPrinter()" style="font-size: 12px; padding: 6px; margin-top: 6px;">+ Add Windows/Network Printer</button>
             </div>
 
             <div class="file-drop" onclick="document.getElementById('file-input').click()">
-                <div style="color:#0284c7; font-weight:bold;">📄 Choose Document / Image</div>
+                <div style="color:#0284c7; font-weight:bold;">📄 Select File to Print</div>
                 <div id="fname" style="font-size:12px; color:#64748b; margin-top:4px;">Supports Images, PDFs & Text</div>
             </div>
-            <input type="file" id="file-input" name="file" style="display:none;" onchange="handleFileSelect(this)" required>
-
-            <div id="preview-container">
-                <label>Document Preview</label>
-                <img id="preview-img" src="" alt="Preview">
-            </div>
+            <input type="file" id="file-input" name="file" style="display:none;" onchange="document.getElementById('fname').innerText = 'Selected: ' + this.files[0].name" required>
 
             <div class="row">
                 <div class="col form-group">
                     <label>Copies</label>
                     <input type="number" name="copies" value="1" min="1" max="99">
                 </div>
-                <div class="col form-group">
-                    <label>Pages (e.g. 1-3, 5)</label>
-                    <input type="text" name="pages" placeholder="All">
-                </div>
             </div>
 
-            <button type="submit">Print Document Now</button>
+            <button type="submit">Print File Now</button>
         </form>
 
         <div class="qr-section">
             <img src="/qr.png" alt="QR">
-            <div style="font-size:11px; color:#64748b; margin-top:4px;">Scan to connect on Local Network</div>
+            <div style="font-size:11px; color:#64748b; margin-top:4px;">Scan to connect from Mobile or PC</div>
         </div>
 
         <div class="footer-copy">
             © 2026 BENOZIR. All Rights Reserved.
         </div>
     </div>
-
-    <script>
-        function toggleAddPrinter() {
-            const box = document.getElementById('add-printer-form');
-            box.style.display = box.style.display === 'block' ? 'none' : 'block';
-        }
-
-        function handleFileSelect(input) {
-            if (input.files && input.files[0]) {
-                const file = input.files[0];
-                document.getElementById('fname').innerText = "Selected: " + file.name;
-                
-                if (file.type.startsWith('image/')) {
-                    const reader = new FileReader();
-                    reader.onload = function(e) {
-                        document.getElementById('preview-img').src = e.target.result;
-                        document.getElementById('preview-container').style.display = 'block';
-                    }
-                    reader.readAsDataURL(file);
-                } else {
-                    document.getElementById('preview-container').style.display = 'none';
-                }
-            }
-        }
-    </script>
 </body>
 </html>
 """
@@ -182,15 +134,6 @@ def print_file_advanced(filepath, printer_name, copies=1):
                 win32api.ShellExecute(0, "print", filepath, None, ".", 0)
         finally:
             win32print.SetDefaultPrinter(old_printer)
-
-def add_windows_printer(printer_path):
-    if WIN32_AVAILABLE:
-        try:
-            win32print.AddPrinterConnection(printer_path)
-            return True, f"Successfully connected printer: {printer_path}"
-        except Exception as e:
-            return False, f"Failed to connect printer: {str(e)}"
-    return False, "Printer addition only supported on Windows host."
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -223,14 +166,6 @@ def index():
             
     return render_template_string(HTML_TEMPLATE, printers=printers, default_printer=default_printer)
 
-@app.route("/add_printer", methods=["POST"])
-def add_printer_route():
-    printer_path = request.form.get("printer_path", "").strip()
-    if printer_path:
-        success, msg = add_windows_printer(printer_path)
-        flash(msg, "success" if success else "error")
-    return redirect("/")
-
 @app.route("/qr.png")
 def qr_code():
     import qrcode
@@ -244,25 +179,49 @@ def qr_code():
     img_io.seek(0)
     return send_file(img_io, mimetype='image/png')
 
-def create_tray_icon():
-    image = Image.new('RGB', (64, 64), color=(2, 132, 199))
-    draw = ImageDraw.Draw(image)
-    draw.rectangle([14, 16, 50, 42], fill='white')
-    draw.rectangle([18, 42, 46, 52], fill='#cbd5e1')
-    return image
+def start_desktop_gui():
+    root = tk.Tk()
+    root.title("Print Server Control Panel - BENOZIR 2026")
+    root.geometry("520x460")
+    root.configure(bg="#f8fafc")
 
-def setup_tray():
-    local_ip = get_local_ip()
-    url_str = f"http://{local_ip}:5000"
-    menu = pystray.Menu(
-        pystray.MenuItem("WiFi & Network Print Server Pro", lambda: None, enabled=False),
-        pystray.MenuItem("© 2026 BENOZIR", lambda: None, enabled=False),
-        pystray.MenuItem(f"URL: {url_str}", lambda: None, enabled=False),
-        pystray.MenuItem("Exit Print Server", lambda icon, item: (icon.stop(), os._exit(0)))
-    )
-    icon = pystray.Icon("LocalPrintServer", create_tray_icon(), f"Network Printer Manager - © 2026 BENOZIR", menu)
-    icon.run()
+    ip = get_local_ip()
+    printers, default_p = get_installed_printers()
+
+    tk.Label(root, text="🖨️ Offline & LAN Print Server", font=("Segoe UI", 16, "bold"), bg="#f8fafc", fg="#0f172a").pack(pady=(15, 2))
+    tk.Label(root, text="© 2026 BENOZIR. All Rights Reserved.", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 15))
+
+    status_frame = tk.LabelFrame(root, text=" Server Network Status ", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7", padx=15, pady=10)
+    status_frame.pack(fill="x", px=20, py=5)
+
+    tk.Label(status_frame, text=f"Network IP URL: http://{ip}:5000", font=("Segoe UI", 11, "bold"), bg="#f8fafc", fg="#166534").pack(anchor="w")
+    tk.Label(status_frame, text="Status: Active & Broadcasting to LAN/WiFi Clients", font=("Segoe UI", 9), bg="#f8fafc", fg="#475569").pack(anchor="w", pady=(2, 0))
+
+    printer_frame = tk.LabelFrame(root, text=" Hosted Shared Printers ", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7", padx=15, pady=10)
+    printer_frame.pack(fill="both", expand=True, px=20, py=10)
+
+    listbox = tk.Listbox(printer_frame, font=("Segoe UI", 9), selectmode=tk.SINGLE)
+    listbox.pack(fill="both", expand=True)
+    for p in printers:
+        listbox.insert(tk.END, f"  •  {p}")
+
+    def quick_print():
+        file_path = filedialog.askopenfilename(title="Select File to Print")
+        if file_path:
+            try:
+                print_file_advanced(file_path, default_p, 1)
+                messagebox.showinfo("Success", f"Sent '{os.path.basename(file_path)}' to default printer!")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to print: {str(e)}")
+
+    btn_frame = tk.Frame(root, bg="#f8fafc")
+    btn_frame.pack(fill="x", px=20, py=(0, 15))
+    
+    tk.Button(btn_frame, text="📄 Quick Local Print", command=quick_print, font=("Segoe UI", 10, "bold"), bg="#0284c7", fg="white", relief="flat", padding=8).pack(fill="x")
+
+    root.protocol("WM_DELETE_WINDOW", lambda: os._exit(0))
+    root.mainloop()
 
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False), daemon=True).start()
-    setup_tray()
+    start_desktop_gui()
