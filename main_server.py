@@ -1,54 +1,525 @@
-name: Build, Sign and Create Inno Setup Installer
+"""
+====================================================================
+ Universal Client-Server LAN Print Station (Enterprise Edition)
+ Features: Print Preview, Page Ranges, Native Dialogs, Signed Pipeline
+ Copyright (c) 2026 BENOZIR. All Rights Reserved.
+====================================================================
+"""
 
-on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
+import os
+import sys
+import socket
+import threading
+import json
+import time
+import subprocess
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk
 
-jobs:
-  build:
-    runs-on: windows-latest
+try:
+    import win32print
+    import win32api
+    WIN32_AVAILABLE = True
+except ImportError:
+    WIN32_AVAILABLE = False
 
-    steps:
-    - name: Checkout Code
-      uses: actions/checkout@v3
+try:
+    import pypdf
+    PYPDF_AVAILABLE = True
+except ImportError:
+    PYPDF_AVAILABLE = False
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+PORT = 9100
+BROADCAST_PORT = 9101
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller pywin32 pillow pypdf fitz
+def get_all_local_ips():
+    ip_list = []
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if not ip.startswith("127."):
+                ip_list.append(ip)
+    except Exception:
+        pass
+    if not ip_list:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('10.255.255.255', 1))
+            ip_list.append(s.getsockname()[0])
+            s.close()
+        except Exception:
+            ip_list = ['127.0.0.1']
+    return list(set(ip_list))
 
-    - name: Build Executable with PyInstaller
-      run: |
-        pyinstaller --noconfirm --onedir --windowed --name "BenozirPrintStation" --icon=NONE main_server.py
+def get_installed_printers():
+    printers = []
+    default_printer = ""
+    if WIN32_AVAILABLE:
+        try:
+            default_printer = win32print.GetDefaultPrinter()
+            flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+            for p in win32print.EnumPrinters(flags):
+                printers.append(p[2])
+        except Exception:
+            pass
+    if not printers:
+        printers = ["Default Printer"]
+        default_printer = "Default Printer"
+    return printers, default_printer
 
-    - name: Sign Binary Executable
-      shell: powershell
-      run: |
-        if ("${{ secrets.BASE64_PFX_CERT }}" -ne "") {
-          echo "${{ secrets.BASE64_PFX_CERT }}" > cert.pfx.b64
-          certutil -decode cert.pfx.b64 cert.pfx
-          & "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe" sign /f cert.pfx /p "${{ secrets.CERT_PASSWORD }}" /tr http://timestamp.digicert.com /td sha256 /fd sha256 "dist/BenozirPrintStation/BenozirPrintStation.exe"
-        } else {
-          Write-Host "No Code Signing Certificate found in secrets. Skipping signing..."
-        }
+def parse_page_range(range_str, max_pages):
+    if not range_str or range_str.strip().lower() == "all":
+        return list(range(max_pages))
+    
+    pages = set()
+    parts = range_str.split(',')
+    for part in parts:
+        part = part.strip()
+        if '-' in part:
+            try:
+                start, end = map(int, part.split('-'))
+                for p in range(start, end + 1):
+                    if 1 <= p <= max_pages:
+                        pages.add(p - 1)
+            except ValueError:
+                pass
+        else:
+            try:
+                p = int(part)
+                if 1 <= p <= max_pages:
+                    pages.add(p - 1)
+            except ValueError:
+                pass
+    return sorted(list(pages))
 
-    - name: Install Inno Setup
-      run: |
-        choco install innosetup -y
+def slice_pdf_file(input_path, output_path, pages_to_keep):
+    if not PYPDF_AVAILABLE:
+        return False
+    reader = pypdf.PdfReader(input_path)
+    writer = pypdf.PdfWriter()
+    for p_idx in pages_to_keep:
+        if p_idx < len(reader.pages):
+            writer.add_page(reader.pages[p_idx])
+    with open(output_path, "wb") as f_out:
+        writer.write(f_out)
+    return True
 
-    - name: Compile Inno Setup Script
-      run: |
-        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer_script.iss
+def print_file_robust(printer_name, filepath, use_native_dialog=False):
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Temp file missing: {filepath}")
 
-    - name: Upload Installer Artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: BenozirPrintStation-Setup
-        path: Output/*.exe
+    ext = os.path.splitext(filepath)[1].lower()
+
+    if use_native_dialog and WIN32_AVAILABLE:
+        try:
+            old_default = win32print.GetDefaultPrinter()
+            win32print.SetDefaultPrinter(printer_name)
+            try:
+                win32api.ShellExecute(0, "printto", filepath, f'"{printer_name}"', ".", 1)
+                time.sleep(3)
+                return
+            finally:
+                win32print.SetDefaultPrinter(old_default)
+        except Exception:
+            pass
+
+    if ext in ['.pdf', '.doc', '.docx', '.txt', '.png', '.jpg', '.jpeg']:
+        try:
+            ps_cmd = (
+                f'$p = "{printer_name}"; '
+                f'$f = "{filepath}"; '
+                f'Start-Process -FilePath $f -Verb PrintTo -ArgumentList "`"$p`"" -WindowStyle Hidden -ErrorAction Stop'
+            )
+            proc = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, timeout=20)
+            if proc.returncode == 0:
+                time.sleep(3)
+                return
+        except Exception:
+            pass
+
+    if WIN32_AVAILABLE:
+        try:
+            old_default = win32print.GetDefaultPrinter()
+            win32print.SetDefaultPrinter(printer_name)
+            try:
+                res = win32api.ShellExecute(0, "print", filepath, None, ".", 0)
+                if int(res) > 32:
+                    time.sleep(3)
+                    return
+            finally:
+                win32print.SetDefaultPrinter(old_default)
+        except Exception:
+            pass
+
+    raise Exception(f"Failed to submit file to '{printer_name}'. Check driver and default program associations.")
+
+def recv_exact(sock, length):
+    data = bytearray()
+    while len(data) < length:
+        packet = sock.recv(length - len(data))
+        if not packet:
+            return None
+        data.extend(packet)
+    return bytes(data)
+
+class PrintServer:
+    def __init__(self, status_callback):
+        self.status_callback = status_callback
+        self.running = False
+
+    def start(self):
+        self.running = True
+        threading.Thread(target=self._udp_multi_broadcaster, daemon=True).start()
+        threading.Thread(target=self._tcp_listener, daemon=True).start()
+
+    def _udp_multi_broadcaster(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        while self.running:
+            for ip in get_all_local_ips():
+                try:
+                    msg = json.dumps({"server_ip": ip, "app": "BENOZIR_PRINT_SERVER"})
+                    sock.sendto(msg.encode(), ('<broadcast>', BROADCAST_PORT))
+                    sock.sendto(msg.encode(), ('255.255.255.255', BROADCAST_PORT))
+                except Exception:
+                    pass
+            time.sleep(2)
+
+    def _tcp_listener(self):
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind(('0.0.0.0', PORT))
+        server_sock.listen(10)
+        while self.running:
+            try:
+                conn, addr = server_sock.accept()
+                threading.Thread(target=self._handle_client, args=(conn, addr), daemon=True).start()
+            except Exception:
+                pass
+
+    def _handle_client(self, conn, addr):
+        temp_path = None
+        try:
+            raw_len = recv_exact(conn, 4)
+            if not raw_len:
+                return
+            header_len = int.from_bytes(raw_len, byteorder='big')
+            header_bytes = recv_exact(conn, header_len)
+            if not header_bytes:
+                return
+
+            header = json.loads(header_bytes.decode('utf-8'))
+            action = header.get("action")
+
+            if action == "ping":
+                conn.sendall(json.dumps({"status": "PONG", "app": "BENOZIR_PRINT_SERVER"}).encode('utf-8'))
+
+            elif action == "get_printers":
+                printers, default_p = get_installed_printers()
+                conn.sendall(json.dumps({"printers": printers, "default": default_p}).encode('utf-8'))
+
+            elif action == "print":
+                printer_name = header.get("printer_name")
+                file_size = header.get("file_size")
+                file_name = header.get("file_name")
+                use_native_dialog = header.get("use_native_dialog", False)
+
+                conn.sendall(b"READY")
+
+                temp_dir = os.environ.get("TEMP", os.path.expanduser("~"))
+                temp_path = os.path.join(temp_dir, f"lan_job_{int(time.time())}_{file_name}")
+
+                received = 0
+                with open(temp_path, "wb") as f:
+                    while received < file_size:
+                        chunk = conn.recv(min(8192, file_size - received))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        received += len(chunk)
+
+                print_file_robust(printer_name, temp_path, use_native_dialog)
+                conn.sendall(b"SUCCESS")
+                self.status_callback(f"Successfully printed '{file_name}' on '{printer_name}'")
+
+        except Exception as e:
+            self.status_callback(f"Error from {addr[0]}: {str(e)}")
+            try:
+                conn.sendall(b"ERROR")
+            except Exception:
+                pass
+        finally:
+            conn.close()
+            if temp_path and os.path.exists(temp_path):
+                def delayed_remove(path):
+                    time.sleep(6)
+                    try:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    except Exception:
+                        pass
+                threading.Thread(target=delayed_remove, args=(temp_path,), daemon=True).start()
+
+class AppGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Universal LAN Print Station - Enterprise 2026")
+        self.root.geometry("680x680")
+        self.root.configure(bg="#f8fafc")
+
+        self.mode = None
+        self.host_ip = None
+        self.preview_image_ref = None
+        self.selected_file_path = None
+        self.total_pages = 1
+
+        self.setup_welcome_screen()
+
+    def setup_welcome_screen(self):
+        for widget in self.root.winfo_children():
+            widget.destroy()
+
+        tk.Label(self.root, text="🖨️ Enterprise LAN Print Station", font=("Segoe UI", 16, "bold"), bg="#f8fafc", fg="#0f172a").pack(pady=(25, 2))
+        tk.Label(self.root, text="Windows 10 & 11 Optimized | Print Preview & Native Support", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
+
+        frame = tk.LabelFrame(self.root, text=" Choose Operating Mode ", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7", padx=20, pady=20)
+        frame.pack(fill="both", expand=True, padx=30, pady=10)
+
+        tk.Button(frame, text="🖥️ Host Mode\n(Run on PC connected to physical printers)", command=self.start_host_mode, font=("Segoe UI", 11, "bold"), bg="#0284c7", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
+        tk.Button(frame, text="💻 Client Mode\n(Run on network PCs to send print jobs)", command=self.start_client_mode, font=("Segoe UI", 11, "bold"), bg="#475569", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
+
+    def start_host_mode(self):
+        self.mode = "HOST"
+        for widget in self.root.winfo_children():
+            widget.destroy()
+
+        ip_addresses = get_all_local_ips()
+        printers, _ = get_installed_printers()
+
+        tk.Label(self.root, text="🖥️ HOST PRINT SERVER", font=("Segoe UI", 15, "bold"), bg="#f8fafc", fg="#166534").pack(pady=(15, 2))
+        
+        ip_frame = tk.Frame(self.root, bg="#e2e8f0", padx=10, pady=6)
+        ip_frame.pack(fill="x", padx=20, pady=5)
+        tk.Label(ip_frame, text=f"Host IPs:  {' | '.join(ip_addresses)}", font=("Segoe UI", 10, "bold"), bg="#e2e8f0", fg="#0f172a").pack()
+
+        p_frame = tk.LabelFrame(self.root, text=" Active Printers ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", padx=10, pady=10)
+        p_frame.pack(fill="x", padx=20, pady=5)
+
+        listbox = tk.Listbox(p_frame, height=3, font=("Segoe UI", 9))
+        listbox.pack(fill="x")
+        for p in printers:
+            listbox.insert(tk.END, f"  • {p}")
+
+        log_frame = tk.LabelFrame(self.root, text=" Print Activity Log ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", padx=10, pady=10)
+        log_frame.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+
+        self.log_box = tk.Text(log_frame, font=("Consolas", 9), state="disabled", bg="#0f172a", fg="#38bdf8")
+        self.log_box.pack(fill="both", expand=True)
+
+        self.server_instance = PrintServer(self.log_message)
+        self.server_instance.start()
+        self.log_message("Host server running. System listening for jobs...")
+
+    def log_message(self, msg):
+        if hasattr(self, 'log_box'):
+            self.log_box.config(state="normal")
+            self.log_box.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+            self.log_box.see(tk.END)
+            self.log_box.config(state="disabled")
+
+    def start_client_mode(self):
+        self.mode = "CLIENT"
+        for widget in self.root.winfo_children():
+            widget.destroy()
+
+        tk.Label(self.root, text="💻 CLIENT PRINT STATION", font=("Segoe UI", 15, "bold"), bg="#f8fafc", fg="#0284c7").pack(pady=(10, 2))
+
+        host_box = tk.Frame(self.root, bg="#f8fafc", padx=15)
+        host_box.pack(fill="x", pady=2)
+        tk.Label(host_box, text="Host IP:", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(side="left")
+        self.ip_entry = tk.Entry(host_box, font=("Segoe UI", 9), width=15)
+        self.ip_entry.pack(side="left", padx=5)
+        tk.Button(host_box, text="Connect", command=self.manual_connect, font=("Segoe UI", 8, "bold"), bg="#0284c7", fg="white", relief="flat").pack(side="left")
+
+        self.status_lbl = tk.Label(self.root, text="Searching LAN for Host...", font=("Segoe UI", 8, "italic"), bg="#f8fafc", fg="#d97706")
+        self.status_lbl.pack(pady=2)
+
+        c_frame = tk.Frame(self.root, bg="#f8fafc", padx=15)
+        c_frame.pack(fill="x")
+
+        tk.Label(c_frame, text="Target Printer:", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(anchor="w")
+        self.printer_combo = ttk.Combobox(c_frame, state="readonly", font=("Segoe UI", 9))
+        self.printer_combo.pack(fill="x", pady=(0, 5))
+
+        tk.Label(c_frame, text="Select File (PDF, Image, Doc):", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(anchor="w")
+        file_box = tk.Frame(c_frame, bg="#f8fafc")
+        file_box.pack(fill="x", pady=(0, 5))
+        self.file_entry = tk.Entry(file_box, font=("Segoe UI", 9))
+        self.file_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        tk.Button(file_box, text="Browse...", command=self.browse_file, font=("Segoe UI", 8, "bold")).pack(side="right")
+
+        page_frame = tk.Frame(c_frame, bg="#e2e8f0", padx=8, pady=5)
+        page_frame.pack(fill="x", pady=5)
+        
+        tk.Label(page_frame, text="Pages (e.g. 'All' or '1-3, 5'):", font=("Segoe UI", 8, "bold"), bg="#e2e8f0").pack(side="left")
+        self.pages_entry = tk.Entry(page_frame, font=("Segoe UI", 9), width=12)
+        self.pages_entry.insert(0, "All")
+        self.pages_entry.pack(side="left", padx=8)
+
+        self.native_dialog_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(page_frame, text="Use Host Native Print Dialog", variable=self.native_dialog_var, font=("Segoe UI", 8), bg="#e2e8f0").pack(side="right")
+
+        prev_frame = tk.LabelFrame(self.root, text=" Print Preview ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", padx=5, pady=5)
+        prev_frame.pack(fill="both", expand=True, padx=15, pady=5)
+
+        self.preview_canvas = tk.Canvas(prev_frame, bg="#64748b", highlightthickness=0)
+        self.preview_canvas.pack(fill="both", expand=True)
+
+        tk.Button(self.root, text="🖨️ Send Print Job to Host", command=self.send_print_job, font=("Segoe UI", 11, "bold"), bg="#166534", fg="white", relief="flat", pady=8).pack(fill="x", padx=15, pady=(5, 12))
+
+        threading.Thread(target=self._auto_discover_host, daemon=True).start()
+
+    def browse_file(self):
+        f = filedialog.askopenfilename(title="Select Document or Image", filetypes=[("Printable Files", "*.pdf;*.png;*.jpg;*.jpeg;*.txt;*.doc;*.docx")])
+        if f:
+            self.selected_file_path = f
+            self.file_entry.delete(0, tk.END)
+            self.file_entry.insert(0, f)
+            self.generate_preview(f)
+
+    def generate_preview(self, filepath):
+        self.preview_canvas.delete("all")
+        ext = os.path.splitext(filepath)[1].lower()
+
+        try:
+            img = None
+            if ext in ['.png', '.jpg', '.jpeg']:
+                img = Image.open(filepath)
+            elif ext == '.pdf' and PYPDF_AVAILABLE:
+                reader = pypdf.PdfReader(filepath)
+                self.total_pages = len(reader.pages)
+                self.preview_canvas.create_text(200, 100, text=f"PDF Loaded ({self.total_pages} Pages)\n\nPage Selection: {self.pages_entry.get()}", fill="white", font=("Segoe UI", 12, "bold"))
+                return
+
+            if img:
+                img.thumbnail((300, 250))
+                self.preview_image_ref = ImageTk.PhotoImage(img)
+                self.preview_canvas.create_image(150, 125, image=self.preview_image_ref)
+            else:
+                self.preview_canvas.create_text(200, 100, text=f"Document Selected:\n{os.path.basename(filepath)}", fill="white", font=("Segoe UI", 11))
+        except Exception as e:
+            self.preview_canvas.create_text(200, 100, text=f"Preview Unavailable\n({str(e)})", fill="#f87171", font=("Segoe UI", 9))
+
+    def manual_connect(self):
+        ip = self.ip_entry.get().strip()
+        if ip:
+            self.host_ip = ip
+            self.status_lbl.config(text=f"Connecting to {ip}...", fg="#0284c7")
+            self.fetch_host_printers()
+
+    def _auto_discover_host(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', BROADCAST_PORT))
+        sock.settimeout(3.0)
+        while self.mode == "CLIENT" and not self.host_ip:
+            try:
+                data, addr = sock.recvfrom(1024)
+                payload = json.loads(data.decode('utf-8'))
+                if payload.get("app") == "BENOZIR_PRINT_SERVER":
+                    self.host_ip = payload.get("server_ip")
+                    self.ip_entry.delete(0, tk.END)
+                    self.ip_entry.insert(0, self.host_ip)
+                    self.fetch_host_printers()
+            except Exception:
+                pass
+
+    def fetch_host_printers(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5.0)
+            s.connect((self.host_ip, PORT))
+
+            payload = json.dumps({"action": "get_printers"}).encode('utf-8')
+            s.sendall(len(payload).to_bytes(4, byteorder='big') + payload)
+
+            data = s.recv(4096)
+            res = json.loads(data.decode('utf-8'))
+            printers = res.get("printers", [])
+            default_p = res.get("default", "")
+
+            self.printer_combo['values'] = printers
+            if default_p in printers:
+                self.printer_combo.set(default_p)
+            elif printers:
+                self.printer_combo.current(0)
+            self.status_lbl.config(text=f"Connected to Host ({self.host_ip})", fg="#166534")
+            s.close()
+        except Exception as e:
+            self.status_lbl.config(text="Connection Failed.", fg="#dc2626")
+
+    def send_print_job(self):
+        filepath = self.file_entry.get().strip()
+        printer_name = self.printer_combo.get()
+
+        if not self.host_ip or not filepath or not os.path.exists(filepath) or not printer_name:
+            messagebox.showwarning("Incomplete Details", "Verify Host IP, Printer, and File path.")
+            return
+
+        temp_job_path = filepath
+        temp_created = False
+        ext = os.path.splitext(filepath)[1].lower()
+
+        if ext == '.pdf' and PYPDF_AVAILABLE:
+            page_range_str = self.pages_entry.get().strip()
+            if page_range_str.lower() != "all":
+                reader = pypdf.PdfReader(filepath)
+                pages_to_keep = parse_page_range(page_range_str, len(reader.pages))
+                if pages_to_keep:
+                    temp_dir = os.environ.get("TEMP", os.path.expanduser("~"))
+                    temp_job_path = os.path.join(temp_dir, f"sliced_{int(time.time())}.pdf")
+                    if slice_pdf_file(filepath, temp_job_path, pages_to_keep):
+                        temp_created = True
+
+        try:
+            file_size = os.path.getsize(temp_job_path)
+            file_name = os.path.basename(filepath)
+
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(15.0)
+            s.connect((self.host_ip, PORT))
+
+            header_dict = {
+                "action": "print",
+                "printer_name": printer_name,
+                "file_name": file_name,
+                "file_size": file_size,
+                "use_native_dialog": self.native_dialog_var.get()
+            }
+            payload = json.dumps(header_dict).encode('utf-8')
+            s.sendall(len(payload).to_bytes(4, byteorder='big') + payload)
+
+            if s.recv(1024) == b"READY":
+                with open(temp_job_path, "rb") as f:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        s.sendall(chunk)
+
+                if s.recv(1024) == b"SUCCESS":
+                    messagebox.showinfo("Success", "Print job sent successfully!")
+                else:
+                    messagebox.showerror("Failed", "Host printer failed to process document.")
+            s.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Transmission Failure: {str(e)}")
+        finally:
+            if temp_created and os.path.exists(temp_job_path):
+                os.remove(temp_job_path)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AppGUI(root)
+    root.protocol("WM_DELETE_WINDOW", lambda: os._exit(0))
+    root.mainloop()
