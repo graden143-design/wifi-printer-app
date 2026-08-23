@@ -88,21 +88,49 @@ def get_installed_printers():
     return printers, default_printer
 
 def add_windows_direct_ip_printer(host_ip, printer_alias="LAN Network Canon G1020"):
-    """Installs a Standard TCP/IP Port in Windows Printers & Scanners menu."""
+    """Installs a Standard TCP/IP Port in Windows using auto-detected existing drivers."""
     port_name = f"IP_{host_ip}"
+    
+    # 1. Dynamically find an existing driver on this client PC
+    ps_get_drivers = '(Get-PrinterDriver).Name'
+    proc_drv = subprocess.run(["powershell", "-Command", ps_get_drivers], capture_output=True, text=True)
+    installed_drivers = [d.strip() for d in proc_drv.stdout.splitlines() if d.strip()]
+
+    # Priority driver order to avoid "Driver does not exist" errors
+    selected_driver = None
+    preferred_drivers = [
+        "Canon G1020 series",
+        "Canon G1000 series",
+        "Generic / Text Only",
+        "Microsoft Print to PDF",
+        "Microsoft XPS Document Writer"
+    ]
+
+    for pref in preferred_drivers:
+        if pref in installed_drivers:
+            selected_driver = pref
+            break
+
+    if not selected_driver and installed_drivers:
+        selected_driver = installed_drivers[0]
+
+    if not selected_driver:
+        return False, "No valid printer drivers found on this PC."
+
     try:
-        # 1. Create Standard TCP/IP Port
-        ps_port_cmd = f'Add-PrinterPort -Name "{port_name}" -PrinterHostAddress "{host_ip}" -PortNumber 9100'
+        # 2. Create Standard TCP/IP Port silently (ignore error if port already exists)
+        ps_port_cmd = f'if (-not (Get-PrinterPort -Name "{port_name}" -ErrorAction SilentlyContinue)) {{ Add-PrinterPort -Name "{port_name}" -PrinterHostAddress "{host_ip}" -PortNumber 9100 }}'
         subprocess.run(["powershell", "-Command", ps_port_cmd], capture_output=True, text=True)
 
-        # 2. Add Printer using generic GDI driver mapped to TCP/IP port
-        ps_print_cmd = f'Add-Printer -Name "{printer_alias}" -DriverName "Generic / Text Only" -PortName "{port_name}"'
+        # 3. Add Printer using guaranteed existing system driver
+        ps_print_cmd = f'if (-not (Get-Printer -Name "{printer_alias}" -ErrorAction SilentlyContinue)) {{ Add-Printer -Name "{printer_alias}" -DriverName "{selected_driver}" -PortName "{port_name}" }}'
         res = subprocess.run(["powershell", "-Command", ps_print_cmd], capture_output=True, text=True)
-        
+
         if res.returncode == 0:
-            return True, f"Successfully added '{printer_alias}' to Windows Printers & Scanners!"
+            return True, f"Successfully added '{printer_alias}' using driver '{selected_driver}'!"
         else:
-            return False, f"PowerShell Notice: {res.stderr or res.stdout}"
+            return False, f"PowerShell Error: {res.stderr or res.stdout}"
+            
     except Exception as e:
         return False, str(e)
 
