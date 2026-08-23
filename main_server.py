@@ -1,7 +1,8 @@
 """
 ====================================================================
  Universal Client-Server LAN Print Station (Enterprise Edition)
- Features: Print Preview, Page Ranges, Native Dialogs, Signed Pipeline
+ Features: Direct TCP Printer Addition, Print Preview, Page Ranges,
+           Bypasses Windows SMB Network Errors (0x80070035)
  Copyright (c) 2026 BENOZIR. All Rights Reserved.
 ====================================================================
 """
@@ -14,7 +15,7 @@ import json
 import time
 import subprocess
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk
 
 try:
@@ -32,7 +33,9 @@ except ImportError:
 
 PORT = 9100
 BROADCAST_PORT = 9101
+CONFIG_FILE = "connected_printers.json"
 
+# --- UTILITY & NETWORK FUNCTIONS ---
 def get_all_local_ips():
     ip_list = []
     try:
@@ -67,6 +70,22 @@ def get_installed_printers():
         printers = ["Default Printer"]
         default_printer = "Default Printer"
     return printers, default_printer
+
+def load_saved_printers():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_printer_config(config):
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=4)
+    except Exception:
+        pass
 
 def parse_page_range(range_str, max_pages):
     if not range_str or range_str.strip().lower() == "all":
@@ -163,6 +182,7 @@ def recv_exact(sock, length):
         data.extend(packet)
     return bytes(data)
 
+# --- HOST SERVER CLASS ---
 class PrintServer:
     def __init__(self, status_callback):
         self.status_callback = status_callback
@@ -261,11 +281,12 @@ class PrintServer:
                         pass
                 threading.Thread(target=delayed_remove, args=(temp_path,), daemon=True).start()
 
+# --- GUI CLASS WITH ADD PRINTER & PREVIEW ---
 class AppGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Universal LAN Print Station - Enterprise 2026")
-        self.root.geometry("680x680")
+        self.root.geometry("720x720")
         self.root.configure(bg="#f8fafc")
 
         self.mode = None
@@ -273,6 +294,7 @@ class AppGUI:
         self.preview_image_ref = None
         self.selected_file_path = None
         self.total_pages = 1
+        self.saved_printers = load_saved_printers()
 
         self.setup_welcome_screen()
 
@@ -281,7 +303,7 @@ class AppGUI:
             widget.destroy()
 
         tk.Label(self.root, text="🖨️ Enterprise LAN Print Station", font=("Segoe UI", 16, "bold"), bg="#f8fafc", fg="#0f172a").pack(pady=(25, 2))
-        tk.Label(self.root, text="Windows 10 & 11 Optimized | Print Preview & Native Support", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
+        tk.Label(self.root, text="Bypasses Windows SMB Share Errors | Native Print Support", font=("Segoe UI", 9), bg="#f8fafc", fg="#64748b").pack(pady=(0, 20))
 
         frame = tk.LabelFrame(self.root, text=" Choose Operating Mode ", font=("Segoe UI", 10, "bold"), bg="#f8fafc", fg="#0284c7", padx=20, pady=20)
         frame.pack(fill="both", expand=True, padx=30, pady=10)
@@ -289,6 +311,7 @@ class AppGUI:
         tk.Button(frame, text="🖥️ Host Mode\n(Run on PC connected to physical printers)", command=self.start_host_mode, font=("Segoe UI", 11, "bold"), bg="#0284c7", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
         tk.Button(frame, text="💻 Client Mode\n(Run on network PCs to send print jobs)", command=self.start_client_mode, font=("Segoe UI", 11, "bold"), bg="#475569", fg="white", relief="flat", pady=12).pack(fill="x", pady=10)
 
+    # --- HOST GUI ---
     def start_host_mode(self):
         self.mode = "HOST"
         for widget in self.root.winfo_children():
@@ -306,7 +329,7 @@ class AppGUI:
         p_frame = tk.LabelFrame(self.root, text=" Active Printers ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", padx=10, pady=10)
         p_frame.pack(fill="x", padx=20, pady=5)
 
-        listbox = tk.Listbox(p_frame, height=3, font=("Segoe UI", 9))
+        listbox = tk.Listbox(p_frame, height=4, font=("Segoe UI", 9))
         listbox.pack(fill="x")
         for p in printers:
             listbox.insert(tk.END, f"  • {p}")
@@ -319,7 +342,7 @@ class AppGUI:
 
         self.server_instance = PrintServer(self.log_message)
         self.server_instance.start()
-        self.log_message("Host server running. System listening for jobs...")
+        self.log_message("Host server running. Listening for direct TCP print requests...")
 
     def log_message(self, msg):
         if hasattr(self, 'log_box'):
@@ -328,6 +351,7 @@ class AppGUI:
             self.log_box.see(tk.END)
             self.log_box.config(state="disabled")
 
+    # --- CLIENT GUI ---
     def start_client_mode(self):
         self.mode = "CLIENT"
         for widget in self.root.winfo_children():
@@ -335,22 +359,28 @@ class AppGUI:
 
         tk.Label(self.root, text="💻 CLIENT PRINT STATION", font=("Segoe UI", 15, "bold"), bg="#f8fafc", fg="#0284c7").pack(pady=(10, 2))
 
+        # Host Connect & Add Printer Toolbar
         host_box = tk.Frame(self.root, bg="#f8fafc", padx=15)
         host_box.pack(fill="x", pady=2)
+
         tk.Label(host_box, text="Host IP:", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(side="left")
         self.ip_entry = tk.Entry(host_box, font=("Segoe UI", 9), width=15)
         self.ip_entry.pack(side="left", padx=5)
-        tk.Button(host_box, text="Connect", command=self.manual_connect, font=("Segoe UI", 8, "bold"), bg="#0284c7", fg="white", relief="flat").pack(side="left")
+        
+        tk.Button(host_box, text="Connect", command=self.manual_connect, font=("Segoe UI", 8, "bold"), bg="#0284c7", fg="white", relief="flat").pack(side="left", padx=2)
+        tk.Button(host_box, text="➕ Add Network Printer", command=self.add_network_printer_dialog, font=("Segoe UI", 8, "bold"), bg="#166534", fg="white", relief="flat").pack(side="right", padx=2)
 
-        self.status_lbl = tk.Label(self.root, text="Searching LAN for Host...", font=("Segoe UI", 8, "italic"), bg="#f8fafc", fg="#d97706")
+        self.status_lbl = tk.Label(self.root, text="Searching LAN for Host Server...", font=("Segoe UI", 8, "italic"), bg="#f8fafc", fg="#d97706")
         self.status_lbl.pack(pady=2)
 
+        # Configuration Box
         c_frame = tk.Frame(self.root, bg="#f8fafc", padx=15)
         c_frame.pack(fill="x")
 
         tk.Label(c_frame, text="Target Printer:", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(anchor="w")
         self.printer_combo = ttk.Combobox(c_frame, state="readonly", font=("Segoe UI", 9))
         self.printer_combo.pack(fill="x", pady=(0, 5))
+        self.update_printer_dropdown([])
 
         tk.Label(c_frame, text="Select File (PDF, Image, Doc):", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(anchor="w")
         file_box = tk.Frame(c_frame, bg="#f8fafc")
@@ -359,6 +389,7 @@ class AppGUI:
         self.file_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
         tk.Button(file_box, text="Browse...", command=self.browse_file, font=("Segoe UI", 8, "bold")).pack(side="right")
 
+        # Page Selection Frame
         page_frame = tk.Frame(c_frame, bg="#e2e8f0", padx=8, pady=5)
         page_frame.pack(fill="x", pady=5)
         
@@ -370,6 +401,7 @@ class AppGUI:
         self.native_dialog_var = tk.BooleanVar(value=False)
         tk.Checkbutton(page_frame, text="Use Host Native Print Dialog", variable=self.native_dialog_var, font=("Segoe UI", 8), bg="#e2e8f0").pack(side="right")
 
+        # Print Preview Canvas Frame
         prev_frame = tk.LabelFrame(self.root, text=" Print Preview ", font=("Segoe UI", 9, "bold"), bg="#f8fafc", padx=5, pady=5)
         prev_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
@@ -379,6 +411,82 @@ class AppGUI:
         tk.Button(self.root, text="🖨️ Send Print Job to Host", command=self.send_print_job, font=("Segoe UI", 11, "bold"), bg="#166534", fg="white", relief="flat", pady=8).pack(fill="x", padx=15, pady=(5, 12))
 
         threading.Thread(target=self._auto_discover_host, daemon=True).start()
+
+    def add_network_printer_dialog(self):
+        """Dialog to connect and add a network printer directly via Host IP."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Network Printer")
+        dialog.geometry("380x200")
+        dialog.configure(bg="#f8fafc")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="➕ Add Shared Network Printer", font=("Segoe UI", 11, "bold"), bg="#f8fafc", fg="#0284c7").pack(pady=10)
+
+        f1 = tk.Frame(dialog, bg="#f8fafc")
+        f1.pack(fill="x", padx=20, pady=5)
+        tk.Label(f1, text="Host IP Address:", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(anchor="w")
+        host_ip_ent = tk.Entry(f1, font=("Segoe UI", 9))
+        host_ip_ent.insert(0, self.host_ip if self.host_ip else "")
+        host_ip_ent.pack(fill="x")
+
+        f2 = tk.Frame(dialog, bg="#f8fafc")
+        f2.pack(fill="x", padx=20, pady=5)
+        tk.Label(f2, text="Display Alias (Optional):", font=("Segoe UI", 9, "bold"), bg="#f8fafc").pack(anchor="w")
+        alias_ent = tk.Entry(f2, font=("Segoe UI", 9))
+        alias_ent.pack(fill="x")
+
+        def save_and_connect():
+            target_ip = host_ip_ent.get().strip()
+            alias = alias_ent.get().strip()
+            if not target_ip:
+                messagebox.showerror("Error", "Please enter a valid Host IP address.", parent=dialog)
+                return
+
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(4.0)
+                s.connect((target_ip, PORT))
+
+                payload = json.dumps({"action": "get_printers"}).encode('utf-8')
+                s.sendall(len(payload).to_bytes(4, byteorder='big') + payload)
+
+                data = s.recv(4096)
+                res = json.loads(data.decode('utf-8'))
+                printers = res.get("printers", [])
+                s.close()
+
+                if printers:
+                    key_name = alias if alias else f"Network Host ({target_ip})"
+                    self.saved_printers[key_name] = {"ip": target_ip, "printers": printers}
+                    save_printer_config(self.saved_printers)
+
+                    self.host_ip = target_ip
+                    self.ip_entry.delete(0, tk.END)
+                    self.ip_entry.insert(0, target_ip)
+
+                    self.update_printer_dropdown(printers)
+                    self.status_lbl.config(text=f"Connected to {key_name}", fg="#166534")
+                    messagebox.showinfo("Success", f"Connected to {len(printers)} printer(s) on Host {target_ip}!", parent=dialog)
+                    dialog.destroy()
+                else:
+                    messagebox.showwarning("No Printers", "Connected to host, but no printers were found.", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Connection Error", f"Cannot connect to Host IP {target_ip}.\nError: {str(e)}", parent=dialog)
+
+        tk.Button(dialog, text="Connect & Save Printer", command=save_and_connect, font=("Segoe UI", 10, "bold"), bg="#166534", fg="white", relief="flat", pady=6).pack(fill="x", padx=20, pady=10)
+
+    def update_printer_dropdown(self, host_printers):
+        combined_list = list(host_printers)
+        for label, data in self.saved_printers.items():
+            for p in data.get("printers", []):
+                combo_item = f"{p} [{data['ip']}]"
+                if combo_item not in combined_list:
+                    combined_list.append(combo_item)
+
+        self.printer_combo['values'] = combined_list
+        if combined_list:
+            self.printer_combo.current(0)
 
     def browse_file(self):
         f = filedialog.askopenfilename(title="Select Document or Image", filetypes=[("Printable Files", "*.pdf;*.png;*.jpg;*.jpeg;*.txt;*.doc;*.docx")])
@@ -399,7 +507,7 @@ class AppGUI:
             elif ext == '.pdf' and PYPDF_AVAILABLE:
                 reader = pypdf.PdfReader(filepath)
                 self.total_pages = len(reader.pages)
-                self.preview_canvas.create_text(200, 100, text=f"PDF Loaded ({self.total_pages} Pages)\n\nPage Selection: {self.pages_entry.get()}", fill="white", font=("Segoe UI", 12, "bold"))
+                self.preview_canvas.create_text(200, 100, text=f"PDF Loaded ({self.total_pages} Pages)\n\nPage Range: {self.pages_entry.get()}", fill="white", font=("Segoe UI", 12, "bold"))
                 return
 
             if img:
@@ -446,24 +554,31 @@ class AppGUI:
             data = s.recv(4096)
             res = json.loads(data.decode('utf-8'))
             printers = res.get("printers", [])
-            default_p = res.get("default", "")
 
-            self.printer_combo['values'] = printers
-            if default_p in printers:
-                self.printer_combo.set(default_p)
-            elif printers:
-                self.printer_combo.current(0)
+            self.update_printer_dropdown(printers)
             self.status_lbl.config(text=f"Connected to Host ({self.host_ip})", fg="#166534")
             s.close()
-        except Exception as e:
+        except Exception:
             self.status_lbl.config(text="Connection Failed.", fg="#dc2626")
 
     def send_print_job(self):
         filepath = self.file_entry.get().strip()
-        printer_name = self.printer_combo.get()
+        selected_printer_raw = self.printer_combo.get()
 
-        if not self.host_ip or not filepath or not os.path.exists(filepath) or not printer_name:
-            messagebox.showwarning("Incomplete Details", "Verify Host IP, Printer, and File path.")
+        if not filepath or not os.path.exists(filepath) or not selected_printer_raw:
+            messagebox.showwarning("Incomplete Details", "Verify Printer and File path.")
+            return
+
+        # Parse target printer and IP
+        printer_name = selected_printer_raw
+        target_ip = self.host_ip
+
+        if "[" in selected_printer_raw and "]" in selected_printer_raw:
+            printer_name = selected_printer_raw.split(" [")[0]
+            target_ip = selected_printer_raw.split("[")[1].replace("]", "")
+
+        if not target_ip:
+            messagebox.showerror("Host Missing", "No Host IP specified for this printer.")
             return
 
         temp_job_path = filepath
@@ -487,7 +602,7 @@ class AppGUI:
 
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(15.0)
-            s.connect((self.host_ip, PORT))
+            s.connect((target_ip, PORT))
 
             header_dict = {
                 "action": "print",
@@ -508,7 +623,7 @@ class AppGUI:
                         s.sendall(chunk)
 
                 if s.recv(1024) == b"SUCCESS":
-                    messagebox.showinfo("Success", "Print job sent successfully!")
+                    messagebox.showinfo("Success", f"Print job sent successfully to {printer_name}!")
                 else:
                     messagebox.showerror("Failed", "Host printer failed to process document.")
             s.close()
