@@ -1,8 +1,8 @@
 """
 ====================================================================
  Universal Client-Server LAN Print Station (Enterprise Edition)
- Features: Direct TCP Printer Addition, Print Preview, Page Ranges,
-           Bypasses Windows SMB Network Errors (0x80070035)
+ Features: Direct File Menu Bar, Hotkeys (Ctrl+O, Ctrl+P),
+           Print Preview, Page Ranges, Native Windows Print Dialogs
  Copyright (c) 2026 BENOZIR. All Rights Reserved.
 ====================================================================
 """
@@ -281,7 +281,7 @@ class PrintServer:
                         pass
                 threading.Thread(target=delayed_remove, args=(temp_path,), daemon=True).start()
 
-# --- GUI CLASS WITH ADD PRINTER & PREVIEW ---
+# --- GUI CLASS WITH FILE MENU BAR ---
 class AppGUI:
     def __init__(self, root):
         self.root = root
@@ -296,7 +296,29 @@ class AppGUI:
         self.total_pages = 1
         self.saved_printers = load_saved_printers()
 
+        self.setup_menu_bar()
         self.setup_welcome_screen()
+
+    def setup_menu_bar(self):
+        """Creates top application File Menu Bar."""
+        self.menu_bar = tk.Menu(self.root)
+        
+        # File Menu
+        self.file_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.file_menu.add_command(label="📂 Open File...", command=self.browse_file, accelerator="Ctrl+O")
+        self.file_menu.add_command(label="🖨️ Direct Print File", command=self.send_print_job, accelerator="Ctrl+P")
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="➕ Add Network Printer...", command=self.add_network_printer_dialog)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="❌ Exit", command=self.root.quit)
+
+        self.menu_bar.add_cascade(label="File", menu=self.file_menu)
+        
+        # Keyboard Shortcuts
+        self.root.bind_all("<Control-o>", lambda event: self.browse_file())
+        self.root.bind_all("<Control-p>", lambda event: self.send_print_job())
+        
+        self.root.config(menu=self.menu_bar)
 
     def setup_welcome_screen(self):
         for widget in self.root.winfo_children():
@@ -359,7 +381,7 @@ class AppGUI:
 
         tk.Label(self.root, text="💻 CLIENT PRINT STATION", font=("Segoe UI", 15, "bold"), bg="#f8fafc", fg="#0284c7").pack(pady=(10, 2))
 
-        # Host Connect & Add Printer Toolbar
+        # Host Connect Toolbar
         host_box = tk.Frame(self.root, bg="#f8fafc", padx=15)
         host_box.pack(fill="x", pady=2)
 
@@ -408,12 +430,11 @@ class AppGUI:
         self.preview_canvas = tk.Canvas(prev_frame, bg="#64748b", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True)
 
-        tk.Button(self.root, text="🖨️ Send Print Job to Host", command=self.send_print_job, font=("Segoe UI", 11, "bold"), bg="#166534", fg="white", relief="flat", pady=8).pack(fill="x", padx=15, pady=(5, 12))
+        tk.Button(self.root, text="🖨️ Send Print Job to Host (Ctrl+P)", command=self.send_print_job, font=("Segoe UI", 11, "bold"), bg="#166534", fg="white", relief="flat", pady=8).pack(fill="x", padx=15, pady=(5, 12))
 
         threading.Thread(target=self._auto_discover_host, daemon=True).start()
 
     def add_network_printer_dialog(self):
-        """Dialog to connect and add a network printer directly via Host IP."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Add Network Printer")
         dialog.geometry("380x200")
@@ -462,8 +483,9 @@ class AppGUI:
                     save_printer_config(self.saved_printers)
 
                     self.host_ip = target_ip
-                    self.ip_entry.delete(0, tk.END)
-                    self.ip_entry.insert(0, target_ip)
+                    if hasattr(self, 'ip_entry'):
+                        self.ip_entry.delete(0, tk.END)
+                        self.ip_entry.insert(0, target_ip)
 
                     self.update_printer_dropdown(printers)
                     self.status_lbl.config(text=f"Connected to {key_name}", fg="#166534")
@@ -484,19 +506,23 @@ class AppGUI:
                 if combo_item not in combined_list:
                     combined_list.append(combo_item)
 
-        self.printer_combo['values'] = combined_list
-        if combined_list:
-            self.printer_combo.current(0)
+        if hasattr(self, 'printer_combo'):
+            self.printer_combo['values'] = combined_list
+            if combined_list:
+                self.printer_combo.current(0)
 
     def browse_file(self):
         f = filedialog.askopenfilename(title="Select Document or Image", filetypes=[("Printable Files", "*.pdf;*.png;*.jpg;*.jpeg;*.txt;*.doc;*.docx")])
         if f:
             self.selected_file_path = f
-            self.file_entry.delete(0, tk.END)
-            self.file_entry.insert(0, f)
-            self.generate_preview(f)
+            if hasattr(self, 'file_entry'):
+                self.file_entry.delete(0, tk.END)
+                self.file_entry.insert(0, f)
+                self.generate_preview(f)
 
     def generate_preview(self, filepath):
+        if not hasattr(self, 'preview_canvas'):
+            return
         self.preview_canvas.delete("all")
         ext = os.path.splitext(filepath)[1].lower()
 
@@ -562,6 +588,10 @@ class AppGUI:
             self.status_lbl.config(text="Connection Failed.", fg="#dc2626")
 
     def send_print_job(self):
+        if not hasattr(self, 'file_entry'):
+            messagebox.showwarning("Client Mode Required", "Please switch to Client Mode first.")
+            return
+
         filepath = self.file_entry.get().strip()
         selected_printer_raw = self.printer_combo.get()
 
@@ -569,7 +599,6 @@ class AppGUI:
             messagebox.showwarning("Incomplete Details", "Verify Printer and File path.")
             return
 
-        # Parse target printer and IP
         printer_name = selected_printer_raw
         target_ip = self.host_ip
 
